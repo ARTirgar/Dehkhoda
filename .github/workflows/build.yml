@@ -24,8 +24,10 @@ jobs:
 
       - name: Prepare data asset
         run: |
+          ls -la data
           mkdir -p app/src/main/assets
           gzip -c data/sample.jsonl > app/src/main/assets/dehkhoda.jsonl.gz
+          ls -la app/src/main/assets
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -33,6 +35,9 @@ jobs:
 
       - name: Build APK
         run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Verify data asset is inside APK
+        run: unzip -l app/build/outputs/apk/debug/app-debug.apk | grep dehkhoda
 
       - uses: actions/upload-artifact@v4
         with:

@@ -137,6 +137,16 @@ class Settings(ctx: Context) {
 }
 
 class DataImporter(private val ctx: Context, private val db: AppDatabase) {
+        private fun openData(): java.io.InputStream {
+        val names = ctx.assets.list("")?.toList() ?: emptyList()
+        val name = names.firstOrNull { it.startsWith("dehkhoda") }
+            ?: throw java.io.FileNotFoundException("data asset missing; assets: $names")
+        val raw = java.io.BufferedInputStream(ctx.assets.open(name))
+        raw.mark(2)
+        val b0 = raw.read(); val b1 = raw.read()
+        raw.reset()
+        return if (b0 == 0x1f && b1 == 0x8b) GZIPInputStream(raw) else raw
+    }
     suspend fun import(asset: String = "dehkhoda.jsonl.gz", onProgress: (Long) -> Unit) =
         withContext(Dispatchers.IO) {
             val dao = db.entryDao()
@@ -150,7 +160,7 @@ class DataImporter(private val ctx: Context, private val db: AppDatabase) {
                 db.withTransaction { dao.insertEntries(entries); dao.insertFts(fts) }
                 onProgress(id); entries.clear(); fts.clear()
             }
-            GZIPInputStream(ctx.assets.open(asset)).bufferedReader(Charsets.UTF_8).use { reader ->
+            openData().bufferedReader(Charsets.UTF_8).use { reader ->
                 while (true) {
                     val line = reader.readLine() ?: break
                     if (line.isBlank()) continue

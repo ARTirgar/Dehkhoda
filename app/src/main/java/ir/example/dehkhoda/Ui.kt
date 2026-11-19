@@ -20,9 +20,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -296,10 +299,21 @@ fun DetailScreen(vm: DetailViewModel, onBack: () -> Unit) {
             })
     }) { pad ->
         SelectionContainer {
-            Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-                Text(entry?.word ?: "", style = MaterialTheme.typography.headlineSmall)
+            Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp)) {
+                Text(entry?.word ?: "",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(12.dp))
-                Text(text, style = MaterialTheme.typography.bodyLarge)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(16.dp))
+                // Justified Persian definition; RTL comes from the app-wide
+                // LayoutDirection.Rtl. TextAlign.Justify needs API 26+ and
+                // falls back to start alignment on API 24-25 (minSdk 24).
+                Text(text,
+                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
+                    textAlign = TextAlign.Justify)
             }
         }
     }

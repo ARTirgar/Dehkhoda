@@ -40,6 +40,8 @@ class DetailRenderTest {
         // long multi-paragraph definition (justification needs many lines).
         var short: Entry? = null
         var long: Entry? = null
+        var lazyMulti: Entry? = null
+        var lazySingle: Entry? = null
         openDataAsset(app).useLines { lines ->
             for (line in lines) {
                 if (line.isBlank()) continue
@@ -49,13 +51,25 @@ class DetailRenderTest {
                 if (short == null && w == "آب") short = Entry(1, w, PersianText.normalize(w), d)
                 if (long == null && d.length > 1500 && d.length < 4000)
                     long = Entry(2, w, PersianText.normalize(w), d)
-                if (short != null && long != null) break
+                if (d.length > 6000 && (lazyMulti == null || lazySingle == null)) {
+                    val p = PersianText.plainText(d)
+                    if (lazyMulti == null && p.length > 4000 && p.contains('\n'))
+                        lazyMulti = Entry(3, w, PersianText.normalize(w), d)
+                    if (lazySingle == null && p.length > 8000 && !p.contains('\n'))
+                        lazySingle = Entry(4, w, PersianText.normalize(w), d)
+                }
+                if (short != null && long != null && lazyMulti != null && lazySingle != null) break
             }
         }
-        check(short != null && long != null) { "sample entries not found" }
-        dao.insertEntries(listOf(short!!, long!!))
+        check(short != null && long != null && lazyMulti != null && lazySingle != null) {
+            "sample entries not found"
+        }
+        dao.insertEntries(listOf(short!!, long!!, lazyMulti!!, lazySingle!!))
 
-        for ((id, name) in listOf(1L to "render-detail-short.png", 2L to "render-detail-long.png")) {
+        for ((id, name) in listOf(
+            1L to "render-detail-short.png", 2L to "render-detail-long.png",
+            3L to "render-detail-lazy-multi.png", 4L to "render-detail-lazy-single.png"
+        )) {
             val vm = DetailViewModel(app, SavedStateHandle(mapOf("id" to id)))
             rule.activityRule.scenario.onActivity { activity ->
                 activity.setContent {

@@ -222,11 +222,14 @@ fun SearchScreen(vm: SearchViewModel, onOpen: (Long) -> Unit) {
 
 @Composable
 fun EntryRow(e: Entry, fav: Boolean, onClick: () -> Unit, onFav: () -> Unit) {
+    // Bounded preview, computed once per entry — not on every recomposition,
+    // and never over the full (up to 65k-char) definition.
+    val preview = remember(e.id) { PersianText.preview(e.definition) }
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(e.word, style = MaterialTheme.typography.titleMedium)
-            Text(PersianText.plainText(e.definition), style = MaterialTheme.typography.bodySmall,
+            Text(preview, style = MaterialTheme.typography.bodySmall,
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -272,6 +275,55 @@ fun FavoritesScreen(vm: FavoritesViewModel, onOpen: (Long) -> Unit) {
     }
 }
 
+/** Definitions longer than this (plain chars) render as lazy blocks: a single
+ *  giant Text re-draws its whole StaticLayout every scroll frame (measured
+ *  ~123 ms draw/frame at 65k chars vs ~4 ms at 2k on the JVM harness). */
+private const val LAZY_DEF_CHARS = 4000
+private const val DEF_CHUNK_CHARS = 2500
+
+internal data class DetailBlock(val text: String, val paragraphEnd: Boolean)
+
+/** Split a long definition into viewport-friendly blocks: one block per
+ *  paragraph; paragraphs longer than [chunkTarget] are chunked at sentence
+ *  boundaries (fallback: word boundary) so even single-block definitions
+ *  render lazily. Chunks of one paragraph stack without extra spacing;
+ *  paragraph ends get a spacer. Word content is preserved exactly — only
+ *  whitespace at chunk boundaries is dropped. Trade-off: a chunk's final
+ *  line renders natural (not stretched) like a paragraph-final line. */
+internal fun detailBlocks(text: String, chunkTarget: Int = DEF_CHUNK_CHARS): List<DetailBlock> {
+    val out = ArrayList<DetailBlock>()
+    for (raw in text.split('\n')) {
+        val p = raw.trim()
+        if (p.isEmpty()) continue
+        if (p.length <= chunkTarget) { out.add(DetailBlock(p, true)); continue }
+        var start = 0
+        while (start < p.length) {
+            val hardEnd = minOf(start + chunkTarget, p.length)
+            if (hardEnd >= p.length) { out.add(DetailBlock(p.substring(start), true)); break }
+            var cut = -1
+            var i = hardEnd - 1
+            val floor = start + chunkTarget / 2
+            while (i >= floor) {
+                val ch = p[i]
+                if (ch == '.' || ch == '!' || ch == '؟' || ch == '؛' || ch == '۔') {
+                    var j = i + 1
+                    while (j < p.length && p[j] == ' ') j++
+                    cut = j
+                    break
+                }
+                i--
+            }
+            if (cut < 0) {
+                val sp = p.lastIndexOf(' ', hardEnd - 1)
+                cut = if (sp > start) sp + 1 else hardEnd
+            }
+            out.add(DetailBlock(p.substring(start, cut).trimEnd(), cut >= p.length))
+            start = cut
+        }
+    }
+    return out
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailScreen(vm: DetailViewModel, onBack: () -> Unit) {
@@ -279,7 +331,10 @@ fun DetailScreen(vm: DetailViewModel, onBack: () -> Unit) {
     val fav by vm.isFavorite.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val text = entry?.let { PersianText.plainText(it.definition) } ?: ""
+    // Compute once per entry — fav toggles and other recompositions must not
+    // re-run plainText over the full definition (up to 65k chars).
+    val entryId = entry?.id
+    val text = remember(entryId) { entry?.let { PersianText.plainText(it.definition) } ?: "" }
     Scaffold(topBar = {
         TopAppBar(
             title = { Text(entry?.word ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -298,22 +353,47 @@ fun DetailScreen(vm: DetailViewModel, onBack: () -> Unit) {
                 }) { Icon(Icons.Filled.Share, "اشتراک") }
             })
     }) { pad ->
-        SelectionContainer {
-            Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp)) {
-                Text(entry?.word ?: "",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Spacer(Modifier.height(16.dp))
-                // Justified Persian definition; RTL comes from the app-wide
-                // LayoutDirection.Rtl. TextAlign.Justify needs API 26+ and
-                // falls back to start alignment on API 24-25 (minSdk 24).
-                Text(text,
-                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
-                    textAlign = TextAlign.Justify)
+        // Justified Persian definition; RTL comes from the app-wide
+        // LayoutDirection.Rtl. TextAlign.Justify needs API 26+ and
+        // falls back to start alignment on API 24-25 (minSdk 24).
+        val defStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp)
+        if (text.length <= LAZY_DEF_CHARS) {
+            SelectionContainer {
+                Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 16.dp)) {
+                    Text(entry?.word ?: "",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(16.dp))
+                    Text(text, style = defStyle, textAlign = TextAlign.Justify)
+                }
+            }
+        } else {
+            // Long definition: lazy blocks bound composition, layout AND draw
+            // to the viewport instead of the full definition length.
+            val blocks = remember(entryId) { detailBlocks(text) }
+            LazyColumn(Modifier.padding(pad).fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+                item(key = "header") {
+                    Column {
+                        Text(entry?.word ?: "",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Spacer(Modifier.height(16.dp))
+                    }
+                }
+                itemsIndexed(blocks, key = { i, _ -> i }) { _, b ->
+                    SelectionContainer {
+                        Text(b.text, style = defStyle, textAlign = TextAlign.Justify)
+                    }
+                    if (b.paragraphEnd) Spacer(Modifier.height(12.dp))
+                }
             }
         }
     }

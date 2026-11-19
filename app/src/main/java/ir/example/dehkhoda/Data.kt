@@ -42,6 +42,10 @@ object PersianText {
         normalize(input).split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
     fun plainText(s: String): String {
         if (!s.contains('<')) return collapseSourceWraps(s).trim()
+        return plainTextHtml(s)
+    }
+
+    private fun plainTextHtml(s: String): String {
         // Protect intentional <br>/</p> breaks with a sentinel, strip tags,
         // then collapse the source's fixed-width line wraps (raw newlines in
         // the HTML text) to single spaces per HTML whitespace semantics.
@@ -49,6 +53,25 @@ object PersianText {
         val noTags = tagRe.replace(brPRe.replace(s, "\u0000"), "")
             .replace("&nbsp;", " ").replace("&amp;", "&")
         return collapseSourceWraps(noTags).trim()
+    }
+
+    /** Bounded-cost preview for list rows: a maxLines=2 preview never needs
+     *  the full definition (up to 65k chars). Processes only a prefix cut at
+     *  the first tag boundary after [limit], with any partial entity trimmed.
+     *  Leading output matches plainText; cost is O(limit), not O(definition). */
+    fun preview(s: String, limit: Int = 2000): String {
+        if (s.length <= limit) return plainText(s)
+        // Long plain-text definitions (no tags): bound the input too; leading
+        // output is identical because whitespace collapsing is local.
+        if (!s.contains('<')) return plainText(s.substring(0, limit))
+        val cut = s.indexOf('>', limit)
+        // No tag closes after [limit]: processing the prefix is still safe —
+        // an unclosed trailing tag strips identically in prefix and full text.
+        if (cut < 0) return plainText(s.substring(0, limit))
+        var prefix = s.substring(0, cut + 1)
+        val amp = prefix.lastIndexOf('&')
+        if (amp >= 0 && prefix.indexOf(';', amp) < 0) prefix = prefix.substring(0, amp)
+        return plainTextHtml(prefix)
     }
 
     /** Single pass: whitespace runs -> one space; U+0000 sentinels -> newline

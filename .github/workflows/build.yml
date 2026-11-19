@@ -24,9 +24,14 @@ jobs:
 
       - name: Prepare data asset
         run: |
-          ls -la data
           mkdir -p app/src/main/assets
-          gzip -c data/sample.jsonl > app/src/main/assets/dehkhoda.jsonl.gz
+          if [ -f data/dehkhoda.jsonl.gz ]; then
+            cp data/dehkhoda.jsonl.gz app/src/main/assets/dehkhoda.jsonl.gz
+          elif [ -f data/dehkhoda.jsonl ]; then
+            gzip -c data/dehkhoda.jsonl > app/src/main/assets/dehkhoda.jsonl.gz
+          else
+            gzip -c data/sample.jsonl > app/src/main/assets/dehkhoda.jsonl.gz
+          fi
           ls -la app/src/main/assets
 
       - uses: gradle/actions/setup-gradle@v4

@@ -1,0 +1,9 @@
+# Raw (uncompressed) dictionary data — only the .gz asset is committed
+data/*.jsonl
+!data/sample.jsonl
+
+# Build outputs
+.gradle/
+build/
+app/build/
+local.properties

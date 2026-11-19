@@ -4,12 +4,16 @@ import android.app.Application
 import android.content.Context
 import androidx.room.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.GZIPInputStream
 
 object PersianText {
+    private val brPRe = Regex("<br\\s*/?>|</p>")
+    private val tagRe = Regex("<[^>]+>")
+
     fun normalize(input: String): String {
         val sb = StringBuilder(input.length)
         for (ch in input) {
@@ -36,11 +40,42 @@ object PersianText {
     fun compact(input: String): String = normalize(input).replace(" ", "")
     fun tokens(input: String): List<String> =
         normalize(input).split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
-    fun plainText(s: String): String =
-        if (s.contains('<')) s.replace(Regex("<br\\s*/?>"), "\n")
-            .replace(Regex("</p>"), "\n").replace(Regex("<[^>]+>"), "")
+    fun plainText(s: String): String {
+        if (!s.contains('<')) return collapseSourceWraps(s).trim()
+        // Protect intentional <br>/</p> breaks with a sentinel, strip tags,
+        // then collapse the source's fixed-width line wraps (raw newlines in
+        // the HTML text) to single spaces per HTML whitespace semantics.
+        // Stored definitions are untouched; this is display/FTS-prep only.
+        val noTags = tagRe.replace(brPRe.replace(s, "\u0000"), "")
             .replace("&nbsp;", " ").replace("&amp;", "&")
-            .replace(Regex("\n{3,}"), "\n\n").trim() else s.trim()
+        return collapseSourceWraps(noTags).trim()
+    }
+
+    /** Single pass: whitespace runs -> one space; U+0000 sentinels -> newline
+     *  (at most two consecutive). Whitespace class matches Regex("\\s+"). */
+    private fun collapseSourceWraps(s: String): String {
+        val sb = StringBuilder(s.length)
+        var pendingSpace = false
+        var nlRun = 0
+        for (ch in s) {
+            when {
+                ch == '\u0000' -> {
+                    if (pendingSpace && sb.isNotEmpty()) sb.append(' ')
+                    if (nlRun < 2) { sb.append('\n'); nlRun++ }
+                    pendingSpace = false
+                }
+                ch == ' ' || ch == '\t' || ch == '\n' || ch == '\u000B' || ch == '\u000C' || ch == '\r' ->
+                    pendingSpace = true
+                else -> {
+                    if (pendingSpace && sb.isNotEmpty()) sb.append(' ')
+                    pendingSpace = false
+                    nlRun = 0
+                    sb.append(ch)
+                }
+            }
+        }
+        return sb.toString()
+    }
 }
 
 @Entity(tableName = "entries", indices = [Index("wordNorm")])
@@ -151,31 +186,46 @@ class DataImporter(private val ctx: Context, private val db: AppDatabase) {
         withContext(Dispatchers.IO) {
             val dao = db.entryDao()
             val batch = 2000
-            val entries = ArrayList<Entry>(batch)
-            val fts = ArrayList<EntryFts>(batch)
-            var id = 0L
             val deepIndex = true
-            suspend fun flush() {
-                if (entries.isEmpty()) return
-                db.withTransaction { dao.insertEntries(entries); dao.insertFts(fts) }
-                onProgress(id); entries.clear(); fts.clear()
-            }
-            openData().bufferedReader(Charsets.UTF_8).use { reader ->
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line.isBlank()) continue
-                    val o = JSONObject(line)
-                    val word = o.optString("w").trim()
-                    if (word.isEmpty()) continue
-                    val def = o.optString("d")
-                    val norm = PersianText.normalize(word)
-                    id++
-                    entries += Entry(id, word, norm, def)
-                    fts += EntryFts(id, norm, PersianText.compact(word),
-                        if (deepIndex) PersianText.normalize(PersianText.plainText(def)) else "")
-                    if (entries.size >= batch) flush()
+            // Pipeline: prepare the next batch while the current one is being
+            // written, overlapping CPU text processing with SQLite writes.
+            // Entry order, per-batch transactions and progress semantics are
+            // unchanged.
+            val channel = Channel<Pair<List<Entry>, List<EntryFts>>>(capacity = 1)
+            coroutineScope {
+                launch {
+                    var id = 0L
+                    var entries = ArrayList<Entry>(batch)
+                    var fts = ArrayList<EntryFts>(batch)
+                    try {
+                        openData().bufferedReader(Charsets.UTF_8).use { reader ->
+                            while (true) {
+                                val line = reader.readLine() ?: break
+                                if (line.isBlank()) continue
+                                val o = JSONObject(line)
+                                val word = o.optString("w").trim()
+                                if (word.isEmpty()) continue
+                                val def = o.optString("d")
+                                val norm = PersianText.normalize(word)
+                                id++
+                                entries.add(Entry(id, word, norm, def))
+                                fts.add(EntryFts(id, norm, PersianText.compact(word),
+                                    if (deepIndex) PersianText.normalize(PersianText.plainText(def)) else ""))
+                                if (entries.size >= batch) {
+                                    channel.send(entries to fts)
+                                    entries = ArrayList(batch); fts = ArrayList(batch)
+                                }
+                            }
+                        }
+                        if (entries.isNotEmpty()) channel.send(entries to fts)
+                    } finally {
+                        channel.close()
+                    }
                 }
-                flush()
+                for ((e, f) in channel) {
+                    db.withTransaction { dao.insertEntries(e); dao.insertFts(f) }
+                    onProgress(e.last().id)
+                }
             }
         }
 }

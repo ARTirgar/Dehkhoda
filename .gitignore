@@ -4,6 +4,10 @@ data/*.jsonl
 
 # Build outputs
 .gradle/
+.kotlin/
 build/
 app/build/
 local.properties
+
+# CI/local-generated data asset (committed copy lives in data/)
+app/src/main/assets/

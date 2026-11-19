@@ -24,6 +24,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     androidResources { noCompress += listOf("gz", "db") }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+            all { it.maxHeapSize = "4g" }
+        }
+    }
 }
 dependencies {
     val bom = platform("androidx.compose:compose-bom:2024.10.01")
@@ -40,4 +47,13 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Local JVM measurement/verification harness (Robolectric) — test-only,
+    // no effect on release builds.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core-ktx:1.6.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
